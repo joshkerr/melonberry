@@ -87,6 +87,10 @@ The app icon is drawn in code (`Support/make-icon.swift`), as is the menu bar gl
 (`Sources/MelonBerry/MenuBarIcon.swift`). The screenshots above are rendered from the app's real views
 with generated sample pages.
 
+## License
+
+[MIT](LICENSE)
+
 ---
 
 MelonBerry is an independent project. It is not affiliated with, endorsed by, or supported by Fujitsu,
