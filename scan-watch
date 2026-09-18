@@ -1,0 +1,45 @@
+#!/bin/zsh
+# scan-watch — start a scan whenever paper is dropped into the scanner's hopper.
+#
+# The iX1600's touchscreen Scan button only works with ScanSnap Home, so the
+# hopper's paper sensor is the trigger instead: load paper, wait a moment to
+# square the stack, and the scan starts by itself.
+#
+#   SCAN_SETTLE   seconds paper must sit in the hopper before scanning (3)
+
+emulate -L zsh
+setopt no_unset
+
+export PATH="/opt/homebrew/bin:$PATH"
+[[ -r ~/.config/melonberry/config ]] && source ~/.config/melonberry/config
+
+: ${SCAN_DEVICE:=fujitsu}
+: ${SCAN_SETTLE:=3}
+
+here=${0:A:h}
+
+# yes | no | offline (scanner closed, unplugged, or held by another app)
+paper() {
+  local line
+  line=$(scanimage -d "$SCAN_DEVICE" -A 2>/dev/null | grep -- '--page-loaded') || { print offline; return }
+  [[ $line == *'[yes]'* ]] && print yes || print no
+}
+
+print "scan-watch: waiting for paper"
+while true; do
+  case $(paper) in
+    offline) sleep 5 ;;
+    no)      sleep 1 ;;
+    yes)
+      sleep "$SCAN_SETTLE"
+      # still there? (not just someone adjusting the guides)
+      if [[ $(paper) == yes ]]; then
+        print "$(date '+%F %T') paper loaded, scanning"
+        "$here/scan" || true
+        # a jam can leave paper in the hopper — wait for it to clear
+        # instead of rescanning in a loop
+        while [[ $(paper) == yes ]]; do sleep 1; done
+      fi
+      ;;
+  esac
+done

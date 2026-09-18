@@ -1,0 +1,72 @@
+#!/bin/zsh
+# scan — feed everything in the scanner's hopper and write one searchable PDF.
+#
+# Settings (override via environment or ~/.config/melonberry/config):
+#   SCAN_DIR      where PDFs land                     (~/Documents/Scans)
+#   SCAN_DPI      resolution                          (300)
+#   SCAN_MODE     Color | Gray | Lineart              (Color)
+#   SCAN_SOURCE   "ADF Duplex" | "ADF Front"          (ADF Duplex)
+#   SCAN_SKIP     drop pages with less than this % of dark pixels, 0 = keep
+#                 all pages (0). Try 0.5 to drop blank backsides.
+#   SCAN_LANG     tesseract OCR language(s)           (eng)
+#   SCAN_DEVICE   SANE device name                    (fujitsu)
+
+emulate -L zsh
+setopt err_return no_unset pipe_fail null_glob
+
+export PATH="/opt/homebrew/bin:$PATH"
+[[ -r ~/.config/melonberry/config ]] && source ~/.config/melonberry/config
+
+: ${SCAN_DIR:=~/Documents/Scans}
+: ${SCAN_DPI:=300}
+: ${SCAN_MODE:=Color}
+: ${SCAN_SOURCE:="ADF Duplex"}
+: ${SCAN_SKIP:=0}
+: ${SCAN_LANG:=eng}
+: ${SCAN_DEVICE:=fujitsu}
+
+notify() {
+  osascript -e "display notification \"$2\" with title \"$1\"" 2>/dev/null || true
+}
+
+work=$(mktemp -d -t melonberry)
+trap 'rm -rf "$work"' EXIT
+
+# No --swdeskew: the driver's deskew spins blank and sparse pages to wild angles;
+# ocrmypdf --deskew below is the conservative replacement.
+# scanimage exits non-zero when the feeder runs empty, which is how every
+# batch ends — so judge success by whether any pages came out.
+scanimage -d "$SCAN_DEVICE" \
+  --source "$SCAN_SOURCE" --mode "$SCAN_MODE" --resolution "$SCAN_DPI" \
+  --swcrop=yes --swskip "$SCAN_SKIP" \
+  --format=png --batch="$work/p%04d.png" >"$work/scanimage.log" 2>&1 || true
+
+pages=("$work"/p*.png)
+if (( ${#pages} == 0 )); then
+  print -u2 "scan: no pages scanned"
+  tail -3 "$work/scanimage.log" >&2
+  notify "Scan failed" "No pages came through the scanner."
+  exit 1
+fi
+
+for p in $pages; do
+  sips -s format jpeg -s formatOptions 85 "$p" --out "${p:r}.jpg" >/dev/null
+done
+
+mkdir -p "$SCAN_DIR"
+out="$SCAN_DIR/Scan $(date '+%Y-%m-%d %H.%M.%S').pdf"
+
+img2pdf --imgsize "${SCAN_DPI}dpi" "$work"/p*.jpg -o "$work/raw.pdf"
+
+# If OCR fails, keep the image-only PDF rather than losing the scan.
+if ocrmypdf --quiet --deskew --rotate-pages --rotate-pages-threshold 3 --output-type pdf --optimize 1 \
+     -l "$SCAN_LANG" "$work/raw.pdf" "$work/ocr.pdf" 2>"$work/ocr.log"; then
+  mv "$work/ocr.pdf" "$out"
+else
+  print -u2 "scan: OCR failed, saving without text layer"
+  tail -3 "$work/ocr.log" >&2
+  mv "$work/raw.pdf" "$out"
+fi
+
+print "$out"
+notify "Scan complete" "${#pages} page(s) → ${out:t}"
