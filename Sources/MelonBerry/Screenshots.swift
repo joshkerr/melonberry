@@ -19,7 +19,7 @@ enum Screenshots {
         controller.loadDemo(pages: Array(pages.prefix(3)), skippedBlanks: 3, stage: .done(URL(fileURLWithPath: saved)))
         save(capture(ScanWindowView(), size: scanSize, dark: false, chromeless: true), to: directory, name: "complete")
 
-        save(capture(SettingsView(), size: NSSize(width: 480, height: 520), dark: false, chromeless: false),
+        save(capture(SettingsView(), size: NSSize(width: 480, height: 600), dark: false, chromeless: false),
              to: directory, name: "settings")
     }
 

@@ -24,6 +24,9 @@ scanners supported by SANE's `fujitsu` backend that report a paper-loaded sensor
   skewed pages, and snaps near-Letter/A4/Legal pages to an exact size so the PDF is uniform.
 - **OCRs everything** so the PDF is searchable. If OCR fails you still get the image-only PDF.
 - Saves to a folder you choose as `Scan 2026-09-18 10.30.00.pdf`, at roughly 1 MB per color page.
+- **Can name the file after the document** instead: `2026-02-19 Acme Energy Statement.pdf`, from the
+  date, the most prominent text and the kind of document found on the first page (optional, off by
+  default; see below).
 
 <p align="center"><img src="docs/settings.png" width="420" alt="Settings"></p>
 
@@ -48,12 +51,28 @@ helpers from System Settings → General → Login Items if you want MelonBerry 
 
 ```
 paper sensor ──▶ scanimage (SANE) ──▶ blank check + page sizing ──▶ img2pdf ──▶ OCRmyPDF ──▶ your folder
+                                                  └──▶ Vision (first page) ──▶ file name ─────┘
 ```
 
 - `scanimage -A` exposes the scanner's hardware sensors; polling `--page-loaded` once a second takes ~35 ms.
-- Pages are scanned at 300 dpi to PNG. Each one is measured for ink coverage (blank sides score ~0.00%
-  dark pixels, a page with a single short line ~0.05%; the cutoff is 0.03%), centered on a standard
-  page size when it is close to one, and written as a JPEG.
+- Pages are scanned at 300 dpi to uncompressed TIFF. Each one is measured for ink coverage (blank sides
+  score ~0.00% dark pixels, a page with a single short line ~0.05%; the cutoff is 0.03%), centered on a
+  standard page size when it is close to one, and written as a JPEG.
+- **Keeping the feeder moving.** With `--swcrop` the driver holds each page until the whole sheet has
+  arrived and been cropped, and the next sheet isn't fed until the page has been written out, so the
+  host's per-page work shows up as a pause between sheets. Two things shorten it: the scan files are
+  TIFF rather than PNG (PNG encoding costs about half a second per side), and the scanner is asked to
+  read ahead into its own memory (`--buffermode=On`) and stage the next sheet (`--prepick=On`). The
+  SANE driver turns buffer mode *off* unless asked. Both options are only passed when `scanimage -A`
+  lists them as active for the connected scanner; `defaults write com.joshkerr.MelonBerry fastFeed -bool NO`
+  disables them if a scanner misbehaves.
+- **Naming files from the document** (Settings → *Name files by: What's on the first page*) runs
+  Apple's Vision text recognition on the first page while OCR is running, on your Mac. The name is
+  `<date> <title> <kind>`: the first date on the page that isn't a due or expiry date (the scan date if
+  there is none), the largest line of text in the top half of the page (usually the letterhead or the
+  heading), and a word like Invoice, Receipt, Statement or Contract if one appears. A page with no
+  usable text falls back to `Scan <date> <time>`. The first scan after installing a new build may take
+  a little longer while Vision compiles its model; the app warms it up at launch when the option is on.
 - [OCRmyPDF](https://ocrmypdf.readthedocs.io) adds the text layer, deskews, and rotates pages. The rotation
   confidence threshold is lowered from 14 to 3 — dense forms often score below the default even when
   the detected orientation is right.
@@ -69,8 +88,9 @@ paper sensor ──▶ scanimage (SANE) ──▶ blank check + page sizing ─�
 
 ## Command-line version
 
-`scan` does one batch from the terminal with the same pipeline, and `scan-watch` is the paper-triggered
-loop as a shell script. Don't run `scan-watch` while the app is running; they would fight over the scanner.
+`scan` does one batch from the terminal with the same pipeline (minus the document-based file names),
+and `scan-watch` is the paper-triggered loop as a shell script. Don't run `scan-watch` while the app is
+running; they would fight over the scanner.
 
 ## Development
 

@@ -32,16 +32,27 @@ notify() {
 work=$(mktemp -d -t melonberry)
 trap 'rm -rf "$work"' EXIT
 
+# Buffer mode lets the scanner read ahead into its own memory and prepick stages the
+# next sheet, so the feeder doesn't idle while the host writes each page out. The
+# driver turns buffer mode off unless asked, and scanimage exits if told to set an
+# option the scanner lacks, so only pass the ones it lists as active.
+feeder=()
+for opt in buffermode prepick; do
+  scanimage -d "$SCAN_DEVICE" -A 2>/dev/null | grep -- "--$opt " | grep -qv inactive && feeder+=("--$opt=On")
+done
+
 # No --swdeskew: the driver's deskew spins blank and sparse pages to wild angles;
 # ocrmypdf --deskew below is the conservative replacement.
+# Uncompressed TIFF rather than PNG: with --swcrop the driver holds each page until it is
+# written, and PNG encoding takes about half a second per side.
 # scanimage exits non-zero when the feeder runs empty, which is how every
 # batch ends — so judge success by whether any pages came out.
 scanimage -d "$SCAN_DEVICE" \
   --source "$SCAN_SOURCE" --mode "$SCAN_MODE" --resolution "$SCAN_DPI" \
-  --swcrop=yes --swskip "$SCAN_SKIP" \
-  --format=png --batch="$work/p%04d.png" >"$work/scanimage.log" 2>&1 || true
+  --swcrop=yes --swskip "$SCAN_SKIP" $feeder \
+  --format=tiff --batch="$work/p%04d.tiff" >"$work/scanimage.log" 2>&1 || true
 
-pages=("$work"/p*.png)
+pages=("$work"/p*.tiff)
 if (( ${#pages} == 0 )); then
   print -u2 "scan: no pages scanned"
   tail -3 "$work/scanimage.log" >&2

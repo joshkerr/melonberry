@@ -11,6 +11,8 @@ enum Prefs {
         static let duplex = "duplex"
         static let colorMode = "colorMode"
         static let skipBlank = "skipBlank"
+        static let smartNames = "smartNames"
+        static let fastFeed = "fastFeed"
     }
 
     static let defaultDestination = ("~/Documents/Scans" as NSString).expandingTildeInPath
@@ -25,6 +27,8 @@ enum Prefs {
             Key.duplex: true,
             Key.colorMode: "Color",
             Key.skipBlank: true,
+            Key.smartNames: false,
+            Key.fastFeed: true,
         ])
     }
 
@@ -40,4 +44,9 @@ enum Prefs {
     static var duplex: Bool { defaults.bool(forKey: Key.duplex) }
     static var skipBlank: Bool { defaults.bool(forKey: Key.skipBlank) }
     static var colorMode: String { defaults.string(forKey: Key.colorMode) ?? "Color" }
+    /// Name PDFs after the date and title read from the first page instead of the scan time.
+    static var smartNames: Bool { defaults.bool(forKey: Key.smartNames) }
+    /// Ask the scanner to feed and scan ahead between pages (buffer mode and prepick). Not in
+    /// Settings; `defaults write com.joshkerr.MelonBerry fastFeed -bool NO` turns it off.
+    static var fastFeed: Bool { defaults.bool(forKey: Key.fastFeed) }
 }

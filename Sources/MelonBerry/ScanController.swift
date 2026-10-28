@@ -54,12 +54,20 @@ final class ScanController: ObservableObject {
     private var armed = true
     private var jobID = 0
     private var conversions: [Int: Task<URL?, Never>] = [:]
+    /// Options the connected scanner supports that keep the feeder moving; read from `scanimage -A`.
+    private var feederArguments: [String] = []
 
     private enum Paper { case loaded, empty, offline }
 
     func start() {
         guard loopTask == nil else { return }
         loopTask = Task { await monitorLoop() }
+        if Prefs.smartNames { Self.warmUpNaming() }
+    }
+
+    /// Loads Vision's text model ahead of the first scan that needs it (see `DocumentNaming.warmUp`).
+    static func warmUpNaming() {
+        Task.detached(priority: .utility) { DocumentNaming.warmUp() }
     }
 
     /// Puts the controller in a fixed state without touching the scanner (used by `--screenshots`).
@@ -148,6 +156,7 @@ final class ScanController: ObservableObject {
         guard result.status == 0,
               let line = result.stdout.split(separator: "\n").first(where: { $0.contains("--page-loaded") })
         else { return .offline }
+        feederArguments = Self.feederArguments(from: result.stdout)
         return line.contains("[yes]") ? .loaded : .empty
     }
 
@@ -184,16 +193,18 @@ final class ScanController: ObservableObject {
             "--resolution", String(Self.dpi),
             // no --swdeskew: the driver's deskew spins blank and sparse pages to wild angles
             "--swcrop=yes",
-            "--format=png", "--batch=\(work.path)/p%04d.png",
-        ], onStderrLine: { [weak self] line in
+            // uncompressed TIFF: PNG encoding costs ~half a second per side, and with --swcrop the
+            // driver holds the whole page back until it's written, so that time stalls the feeder
+            "--format=tiff", "--batch=\(work.path)/p%04d.tiff",
+        ] + (Prefs.fastFeed ? feederArguments : []), onStderrLine: { [weak self] line in
             guard let number = Self.scannedPageNumber(in: line) else { return }
             Task { @MainActor in self?.pageScanned(number, in: work) }
         })
 
         // catch any page whose progress line hasn't been delivered yet
-        let pngs = (try? FileManager.default.contentsOfDirectory(at: work, includingPropertiesForKeys: nil)) ?? []
-        for png in pngs where png.pathExtension == "png" {
-            if let number = Int(png.deletingPathExtension().lastPathComponent.dropFirst()) {
+        let scans = (try? FileManager.default.contentsOfDirectory(at: work, includingPropertiesForKeys: nil)) ?? []
+        for scan in scans where scan.pathExtension == "tiff" {
+            if let number = Int(scan.deletingPathExtension().lastPathComponent.dropFirst()) {
                 pageScanned(number, in: work)
             }
         }
@@ -211,6 +222,10 @@ final class ScanController: ObservableObject {
         }
 
         stage = .processing
+        // read the first page for a name while the PDF is assembled and OCR'd
+        let naming: Task<String?, Never>? = Prefs.smartNames
+            ? Task.detached(priority: .userInitiated) { [first = jpegs[0]] in DocumentNaming.suggestedName(forFirstPage: first) }
+            : nil
         let raw = work.appendingPathComponent("raw.pdf")
         let assembled = await runProcess(img2pdf, ["--imgsize", "\(Self.dpi)dpi"] + jpegs.map(\.path) + ["-o", raw.path])
         guard assembled.status == 0 else {
@@ -227,7 +242,7 @@ final class ScanController: ObservableObject {
         let finished = recognized.status == 0 ? ocr : raw
 
         do {
-            let destination = try Self.uniqueDestination()
+            let destination = try Self.uniqueDestination(named: await naming?.value ?? Self.timestampName())
             try FileManager.default.moveItem(at: finished, to: destination)
             lastOutput = destination
             finish(.done(destination), windowShown: windowShown)
@@ -238,15 +253,15 @@ final class ScanController: ObservableObject {
 
     private func pageScanned(_ number: Int, in work: URL) {
         guard conversions[number] == nil else { return }
-        let png = work.appendingPathComponent(String(format: "p%04d.png", number))
-        let jpeg = png.deletingPathExtension().appendingPathExtension("jpg")
+        let scan = work.appendingPathComponent(String(format: "p%04d.tiff", number))
+        let jpeg = scan.deletingPathExtension().appendingPathExtension("jpg")
         let skipBlank = Prefs.skipBlank
         conversions[number] = Task.detached(priority: .userInitiated) { [weak self] in
             // scanimage announces a page just before renaming its .part file into place
-            for _ in 0..<60 where !FileManager.default.fileExists(atPath: png.path) {
+            for _ in 0..<60 where !FileManager.default.fileExists(atPath: scan.path) {
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
-            guard let source = CGImageSourceCreateWithURL(png as CFURL, nil),
+            guard let source = CGImageSourceCreateWithURL(scan as CFURL, nil),
                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
             else { return nil }
             let isBlank = skipBlank && PageAnalysis.inkPercentage(of: image) < PageAnalysis.blankThreshold
@@ -317,6 +332,18 @@ final class ScanController: ObservableObject {
         return Int(line.dropFirst("Scanned page ".count).prefix { $0.isNumber })
     }
 
+    /// Scanner options that keep the ADF moving between pages: buffer mode lets the scanner read
+    /// ahead into its own memory and prepick stages the next sheet, so the time the host spends
+    /// on one page doesn't idle the feeder. The driver turns buffer mode *off* unless asked, and
+    /// scanimage exits if told to set an option the scanner doesn't have, so only pass what
+    /// `scanimage -A` lists as active.
+    nonisolated static func feederArguments(from options: String) -> [String] {
+        let lines = options.split(separator: "\n")
+        return ["buffermode", "prepick"].compactMap { name in
+            lines.contains { $0.contains("--\(name) ") && !$0.contains("[inactive]") } ? "--\(name)=On" : nil
+        }
+    }
+
     nonisolated private static func failureReason(from stderr: String) -> String {
         let lower = stderr.lowercased()
         if lower.contains("jam") { return "Paper jam — clear the feeder and try again." }
@@ -348,12 +375,15 @@ final class ScanController: ObservableObject {
         return CGImageDestinationFinalize(destination)
     }
 
-    private static func uniqueDestination() throws -> URL {
-        let folder = Prefs.destination
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    private static func timestampName() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        let base = "Scan \(formatter.string(from: Date()))"
+        return "Scan \(formatter.string(from: Date()))"
+    }
+
+    private static func uniqueDestination(named base: String) throws -> URL {
+        let folder = Prefs.destination
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var url = folder.appendingPathComponent("\(base).pdf")
         var suffix = 2
         while FileManager.default.fileExists(atPath: url.path) {

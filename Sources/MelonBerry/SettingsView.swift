@@ -17,7 +17,7 @@ final class SettingsWindowManager {
 
     private func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 600),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "MelonBerry Settings"
         window.isReleasedWhenClosed = false
@@ -36,6 +36,7 @@ struct SettingsView: View {
     @AppStorage(Prefs.Key.duplex) private var duplex = true
     @AppStorage(Prefs.Key.colorMode) private var colorMode = "Color"
     @AppStorage(Prefs.Key.skipBlank) private var skipBlank = true
+    @AppStorage(Prefs.Key.smartNames) private var smartNames = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -49,6 +50,15 @@ struct SettingsView: View {
                     Spacer()
                     Button("Choose…", action: chooseDestination)
                 }
+                Picker("Name files by", selection: $smartNames) {
+                    Text("Time of scan").tag(false)
+                    Text("What’s on the first page").tag(true)
+                }
+                .onChange(of: smartNames) { _, on in if on { ScanController.warmUpNaming() } }
+                Text(smartNames
+                     ? "The document’s date, its most prominent line of text and what kind of document it is, e.g. “2026-02-19 Acme Energy Statement.pdf”. Read on your Mac; nothing is sent anywhere."
+                     : "e.g. “Scan 2026-02-19 10.30.00.pdf”")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
 
             Section("Scanning") {
@@ -83,7 +93,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 520)
+        .frame(width: 480, height: 600)
     }
 
     private func chooseDestination() {
